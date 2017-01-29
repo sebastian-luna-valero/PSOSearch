@@ -17,19 +17,19 @@ Title=PSOSearch: An implementation of the Particle Swarm Optimization (PSO) algo
 Category=Attribute selection
 
 # Author (required)
-Author=Sebastian Luna Valero <sebastian@uma.es>
+Author=Sebastian Luna Valero <sebastian.luna.valero@gmail.com>
 
 # Maintainer (required)
-Maintainer=Sebastian Luna Valero <sebastian@uma.es>
+Maintainer=Sebastian Luna Valero <sebastian.luna.valero@gmail.com>
 
 # License (required)
-License=GPL 2.0
+License=GPL 3.0
 
 # Description (required)
 Description=PSOSearch explores the attribute space using the Particle Swarm Optimization (PSO) algorithm described in:<br/><br/> Moraglio, A., Di Chio, C., and Poli, R. <br/> Geometric Particle Swarm Optimisation. <br/> EuroGP 2007, LNCS 445, pp. 125-135. <br/><br/> For an application to gene expression data classification, see:<br/><br/> Garcia-Nieto, J.M., Alba, E., Jourdan, L., and Talbi, E.-G.<br/>  Sensitivity and specificity based multiobjective approach for feature selection: Application to cancer diagnosis. <br/> Information Processing Letters, 109(16):887-896, July 2009.
 
 # Package URL for obtaining the package archive (required)
-PackageURL=http://www.sebastianlunavalero.es/weka/PSOSearch1.0.0.zip
+PackageURL=https://github.com/sebastian-luna-valero/PSOSearch/archive/1.0.0.zip
 
 # URL for further information
 URL=http://neo.lcc.uma.es/
