@@ -16,16 +16,20 @@
 
 package weka.attributeSelection;
 
+import java.io.File;
 import java.util.BitSet;
 import java.util.Enumeration;
 import java.util.Hashtable;
+import java.util.LinkedList;
 import java.util.Random;
 import java.util.Vector;
-
+import weka.core.Debug;
 import weka.core.Instances;
 import weka.core.Option;
 import weka.core.OptionHandler;
 import weka.core.Range;
+import weka.core.SelectedTag;
+import weka.core.Tag;
 import weka.core.TechnicalInformation;
 import weka.core.TechnicalInformationHandler;
 import weka.core.Utils;
@@ -92,8 +96,12 @@ import weka.core.TechnicalInformation.Type;
  * The number of iterations to perform.
  * (default = 20)</pre>
  * 
+ * <pre> -T <mutation type>
+ * The type of mutation to be applied: 
+ * 0 = bit-flip (default), 1 = bit-off</pre>
+ *  
  * <pre> -M <mutation probability>
- * The probability of bit-flip mutation.
+ * The probability of mutation.
  * (default = 0.01)</pre>
  * 
  * <pre> -A <intertia weight>
@@ -122,6 +130,12 @@ import weka.core.TechnicalInformation.Type;
  * <pre> -S <seed>
  *  Set the random number seed.
  *  (default = 1)</pre>
+ *  
+ * <pre> -L <log file name>
+ *  Set the log file location.
+ *  Log file just keeps track of the best fitness
+ *  found through all the iterations.
+ *  (default = null)</pre>
  * 
  <!-- options-end -->
  * 
@@ -161,11 +175,17 @@ public class PSOSearch extends ASSearch
 	/** the number of individual solutions */
 	private int m_popSize;
 
-	/** the best population member found during the search */
-	private PSOBitSet m_best;
+	/** the best particle found during the whole search */
+	private PSOBitSet m_totalBest;
 
-	/** the number of features in the best population member */
-	private int m_bestFeatureCount;
+	/** the number of selected genes in the the total best */
+	private int m_totalBestFeatureCount;
+
+	/** the best particle found in each iteration */
+	private PSOBitSet m_partialBest;
+	
+	/** the number of features in the partial best */
+	private int m_partialBestFeatureCount;
 
 	/** the number of entries to cache for lookup */
 	private int m_lookupTableSize;
@@ -188,6 +208,21 @@ public class PSOSearch extends ASSearch
 	/** the weight of the best global particle position */
 	private double m_bestGW;
 
+	/** the mutation type: 0 = bit-flip (default), 1 = bit-off */
+	private int m_mutationType;
+	
+	/** mutation type: bit-flip (default) */
+	protected static final int BIT_FLIP = 0;
+	
+	/** mutation type: bif-off */
+	protected static final int BIT_OFF = 1;
+	
+	/** mutation types */
+	public static final Tag [] TAGS_SELECTION = {
+		new Tag(BIT_FLIP, "bit-flip"),
+		new Tag(BIT_OFF, "bit-off")
+	};
+	
 	/** the probability of mutation occuring */
 	private double m_pMutation;
 
@@ -206,6 +241,12 @@ public class PSOSearch extends ASSearch
 
 	/** holds the generation reports */
 	private StringBuffer m_generationReports;
+	
+	/** log file to save important traces */
+	private File m_logFile;
+	
+	/** list to keep track of the fitness */
+	private LinkedList m_bestFitnessList;
 	
 	
 	/**
@@ -228,7 +269,7 @@ public class PSOSearch extends ASSearch
 	@Override
 	public int[] search(ASEvaluation ASEval, Instances data)
 	throws Exception {
-		m_best = null;
+		m_totalBest = null;
 		m_generationReports = new StringBuffer();
 
 		if (!(ASEval instanceof SubsetEvaluator)) {
@@ -271,19 +312,17 @@ public class PSOSearch extends ASSearch
 		m_generationReports.append(populationReport(0));
 
 		int i = 1;
-		boolean converged = false;
-		
-		while ((converged == false) && (i <= m_maxGenerations)) {			
+
+		while (i <= m_maxGenerations) {			
 			generation();
 			evaluatePopulation(ASEvaluator);
 			populationStatistics();
 			scalePopulation();
-			// find the best pop member and check for convergence
-			converged = checkBest();
+			// update what is the best particle in the swarm (that with higher fitness)
+			checkBest();
 			
 			if ((i == m_maxGenerations) || 
-				(i % m_reportFrequency == 0) || 
-				(converged == true)) {
+				(i % m_reportFrequency == 0)) {
 				
 				m_generationReports.append(populationReport(i));
 				
@@ -293,7 +332,32 @@ public class PSOSearch extends ASSearch
 			
 		} // while
 		
-		return attributeList(m_best.getChromosome());
+		// save the best fitness track to a file??
+		if (!getLogFile().isDirectory()) {
+			StringBuffer message = new StringBuffer();
+			int bestI = 0;
+			boolean found = false;
+			
+			// look for the first iteration where the best fitness was found
+			while (!found) {
+				if (Double.compare(((Double)m_bestFitnessList.get(bestI)).doubleValue(),m_totalBest.getObjective()) == 0) {
+					found = true;
+				} else {
+					bestI++;
+				}
+			}
+
+			message.append("\nBest fitness found: " + m_totalBest.getObjective() 
+					+ ", with " + countFeatures(m_totalBest.getChromosome()) + " features selected.\n");
+			message.append("Best iteration found: " + bestI + "\n");
+			message.append("Selected features are: " + printPopMember(m_totalBest.getChromosome()) + "\n");
+						
+		    // write 
+		    Debug.writeToFile(getLogFile().getAbsolutePath(), message.toString(), true);
+		    
+		} // if m_logFile		
+		
+		return attributeList(m_totalBest.getChromosome());
 		
 	} // search
 
@@ -440,7 +504,8 @@ public class PSOSearch extends ASSearch
 			m_bestPopulation[index] = (PSOBitSet)m_population[index].clone();			
 		} else if (Utils.eq(merit, m_bestPopulation[index].getObjective())) {
 			if (countFeatures(chromosome) < countFeatures(m_bestPopulation[index].getChromosome())) {
-				m_bestPopulation[index] = (PSOBitSet)m_population[index].clone();			}
+				m_bestPopulation[index] = (PSOBitSet)m_population[index].clone();			
+			}
 		}
 	} // updateBestPopulation
 
@@ -505,73 +570,88 @@ public class PSOSearch extends ASSearch
 	
 	
 	/**
-	 * checks to see if any population members in the current
-	 * population are better than the best found so far. Also checks
-	 * to see if the search has converged---that is there is no difference
-	 * in fitness between the best and worse population member
-	 * @return true is the search has converged
+	 * checks if any population members in the current population
+	 * are better than the best found so far.
+	 * 
 	 * @throws Exception if something goes wrong
 	 */
-	private boolean checkBest() throws Exception {
+	private void checkBest() throws Exception {
+		// Convergence: This method has changed respect to the version 1.0.0.
+		// Convergence is not reached when all particles in the swarm have the same fitness. (version 1.0.0 did it)
+		// Convergence is reached when all particles remains in the same position during several iterations.
+		// Checking convergence add extra computational cost, and we are not interested in that so far.
 		int i,count,lowestCount = m_numAttribs;
-		double b = -Double.MAX_VALUE;
-		PSOBitSet localbest = null;
-		BitSet temp;
-		boolean converged = false;
-		int oldcount = Integer.MAX_VALUE;
+		boolean sameFitness = false;
+		PSOBitSet currentBest = m_population[0];
+		double currentBestFitness = currentBest.getObjective();
+		int currentBestCount = countFeatures(currentBest.getChromosome()); 
 
 		if (m_maxFitness - m_minFitness > 0) {
 			// find the best in this population
-			for (i=0;i<m_popSize;i++) {
-				if (m_population[i].getObjective() > b) {
-					b = m_population[i].getObjective();
-					localbest = m_population[i];
-					oldcount = countFeatures(localbest.getChromosome());
-				} else if (Utils.eq(m_population[i].getObjective(), b)) {
+			for (i=1;i<m_popSize;i++) {
+				if (m_population[i].getObjective() > currentBestFitness) {
+					currentBestFitness = m_population[i].getObjective();
+					currentBest = m_population[i];
+					currentBestCount = countFeatures(currentBest.getChromosome());
+				} else if (Utils.eq(m_population[i].getObjective(), currentBestFitness)) {
 					// see if it contains fewer features
 					count = countFeatures(m_population[i].getChromosome());
-					if (count < oldcount) {
-						b = m_population[i].getObjective();
-						localbest = m_population[i];
-						oldcount = count;
+					if (count < m_partialBestFeatureCount) {
+						currentBestFitness = m_population[i].getObjective();
+						currentBest = m_population[i];
+						currentBestCount = count;
 					}
 				}
 			}
 		} else {
 			// look for the smallest subset
-			for (i=0;i<m_popSize;i++) {
-				temp = m_population[i].getChromosome();
-				count = countFeatures(temp);
-
+			for (i=1;i<m_popSize;i++) {
+				count = countFeatures(m_population[i].getChromosome());	
 				if (count < lowestCount) {
 					lowestCount = count;
-					localbest = m_population[i];
-					b = localbest.getObjective();
-				}
-			}
-			converged = true;
-		}
+					currentBest = m_population[i];
+					currentBestCount = count;
+				} // if-count
+			} // for-pop
+			sameFitness = true;
+		} // if-fitness
+		
+		m_partialBest = (PSOBitSet)currentBest.clone();
+		m_partialBestFeatureCount = currentBestCount;
 
-		// count the number of features in localbest
-		count = 0;
-		temp = localbest.getChromosome();
-		count = countFeatures(temp);
-
-		// compare to the best found so far
-		if (m_best == null) {
-			m_best = (PSOBitSet)localbest.clone();
-			m_bestFeatureCount = count;
-		} else if (b > m_best.getObjective()) {
-			m_best = (PSOBitSet)localbest.clone();
-			m_bestFeatureCount = count;
-		} else if (Utils.eq(m_best.getObjective(), b)) {
+		// compare the best particle in the the swarm in this iteration (partial best) 
+		// to the best found so far (total best)
+		if (m_totalBest == null) {
+			m_totalBest = (PSOBitSet)currentBest.clone();
+			m_totalBestFeatureCount = currentBestCount;
+		} else if (currentBestFitness > m_totalBest.getObjective()) {
+			m_totalBest = (PSOBitSet)currentBest.clone();
+			m_totalBestFeatureCount = currentBestCount;
+		} else if (Utils.eq(m_totalBest.getObjective(), currentBestFitness)) {
 			// see if the localbest has fewer features than the best so far
-			if (count < m_bestFeatureCount) {
-				m_best = (PSOBitSet)localbest.clone();
-				m_bestFeatureCount = count;
+			if (currentBestCount < m_totalBestFeatureCount) {
+				m_totalBest = (PSOBitSet)currentBest.clone();
+				m_totalBestFeatureCount = currentBestCount;
 			}
 		}
-		return converged;
+		
+		// keep track of the total best during all the iterations
+		m_bestFitnessList.add(m_totalBest.getObjective());
+		
+		// save the best fitness track to a file??
+		if (!getLogFile().isDirectory()) {
+			StringBuffer message = new StringBuffer();
+			if (sameFitness) {
+				// "bfe" in the log file denotes that all particles have the same fitness
+				message.append("bfe: " + ((Double)m_totalBest.getObjective()).doubleValue());
+			} else {
+				// on the contrary, "bf" just denotes the best fitness reached so far
+				message.append("bf: " + ((Double)m_totalBest.getObjective()).doubleValue());
+			}
+		    // write 
+		    Debug.writeToFile(getLogFile().getAbsolutePath(), message.toString(), true);
+		} // if m_logFile		
+		
 	}
 
 	
@@ -608,7 +688,9 @@ public class PSOSearch extends ASSearch
 		temp.append("merit   \tscaled  \tsubset\n");
 
 		for (i=0;i<m_popSize;i++) {
-			temp.append(Utils.doubleToString(Math.abs(m_population[i].getObjective()),8,5)
+			// Sebas
+//			temp.append(Utils.doubleToString(Math.abs(m_population[i].getObjective()),8,5)
+			temp.append(Utils.doubleToString(m_population[i].getObjective(),8,5)
 					+"\t"
 					+Utils.doubleToString(m_population[i].getFitness(),8,5)
 					+"\t");
@@ -665,10 +747,10 @@ public class PSOSearch extends ASSearch
 			// first apply 3PBMCX to particle i
 			m_population[i].threePBMCX(m_random, 
 					m_currentW, m_bestGW, m_bestPW, 
-					m_best.getChromosome(),	m_bestPopulation[i].getChromosome());
+					m_partialBest.getChromosome(),m_bestPopulation[i].getChromosome());
 			
 			// second apply mutation to particle i
-			m_population[i].mutation(m_random, m_pMutation);
+			m_population[i].mutation(m_mutationType, m_random, m_pMutation);
 		} // for
 	} // generation
 	
@@ -690,12 +772,21 @@ public class PSOSearch extends ASSearch
 		
 		result.append("\n\tPopulation size: " + m_popSize);
 		result.append("\n\tNumber of iterations: " + m_maxGenerations);
+		
+		if (m_mutationType == BIT_FLIP) {
+			result.append("\n\tMutation type: bit-flip");
+		} else {
+			result.append("\n\tMutation type: bit-off");
+		}
+		
 		result.append("\n\tMutation probability: " + m_pMutation);
 		result.append("\n\tInertia weight: " + m_currentW);
 		result.append("\n\tSocial weight: " + m_bestGW);
 		result.append("\n\tIndividual weight: " + m_bestPW);
 		result.append("\n\tReport frequency: " + m_reportFrequency);
-		result.append("\n\tSeed: " + m_seed + "\n");
+		result.append("\n\tSeed: " + m_seed);
+		result.append("\n\tLog file: " + getLogFile() + "\n");
+		
 		result.append(m_generationReports.toString());
 		
 		return result.toString();
@@ -707,13 +798,16 @@ public class PSOSearch extends ASSearch
 	 * @return an enumeration of all the available options.
 	 **/
 	public Enumeration listOptions() {
-		Vector newVector = new Vector(9);
+		Vector newVector = new Vector(11);
 		
 		newVector.addElement(new Option("\tNumber of particles in the swarm (default = 20)", 
 				                        "N",1,"-N <swarm size>"));
 		
 		newVector.addElement(new Option("\tNumber of iterations to perform (default = 20)",
 				                        "I",1,"-I <iterations>"));
+		
+		newVector.addElement(new Option("\tType of mutation (default = bit-flip)",
+				                        "T",1,"-T <0 = bit-flip | 1 = bit-off>"));
 		
 		newVector.addElement(new Option("\tSet the mutation probability (default = 0.01)",
 				                        "M",1,"-M <mutation probability>"));
@@ -726,7 +820,8 @@ public class PSOSearch extends ASSearch
 		
 		newVector.addElement(new Option("\tIndividual weight in 3PBMCX (default = 0.34)" +
 				                        "\nIMPORTANT CONSTRAINT: " +
-				                        "inertia weight + social weight + individual weight = 1!",
+				                        "inertia weight + social weight + individual weight = 1 " +
+				                        "and all these weights should be greater than or equal to zero!",
 				                        "C",1,"-C <individual weight>"));
 		
 	    newVector.addElement(new Option("\tSpecify a starting set of attributes." 
@@ -745,6 +840,12 @@ public class PSOSearch extends ASSearch
 	    newVector.addElement(new Option("\tSet the random number seed."
                                         +"\n\t(default = 1)" 
                                         ,"S",1,"-S <seed>"));
+	    
+	    newVector.addElement(new Option("\tSet the log file location."
+	    		                        +"\n\tLog file just keeps track of the best fitness"
+                                        +"\n\tfound through all the iterations."
+	    		                        +"\n\t(default = null)"
+	    		                        ,"L",1,"-L <log file name>"));
 	    
 		return newVector.elements();
 		
@@ -765,8 +866,12 @@ public class PSOSearch extends ASSearch
 	 * The number of iterations to perform.
 	 * (default = 20)</pre>
 	 * 
+	 * <pre> -T &lt;mutation type&gt
+	 * The type of mutation to be applied:
+	 * 0 = bit-flip (default), 1 = bit-off.</pre>
+	 * 
 	 * <pre> -M &lt;mutation probability&gt
-	 * The probability of bit-flip mutation.
+	 * The probability of mutation.
 	 * (default = 0.01)</pre>
 	 * 
 	 * <pre> -A &lt;intertia weight&gt
@@ -780,7 +885,8 @@ public class PSOSearch extends ASSearch
 	 * <pre> -C &lt;individual weight&gt
 	 * The individual weight in 3PBMCX.
 	 * (default = 0.34)
-	 * IMPORTANT CONSTRAINT: &lt;inertia weight&gt + &lt;social weight&gt + &lt;individual weight&gt = 1</pre>
+	 * IMPORTANT CONSTRAINT: &lt;inertia weight&gt + &lt;social weight&gt + &lt;individual weight&gt = 1
+	 * and all these weights should be greater than or equal to zero!</pre>
 	 *  
 	 * <pre> -P &lt;start set&gt
 	 *  Specify a starting set of attributes.
@@ -796,6 +902,12 @@ public class PSOSearch extends ASSearch
 	 * <pre> -S &lt;seed&gt
 	 *  Set the random number seed.
 	 *  (default = 1)</pre>
+	 *  
+	 * <pre> -L &lt;log file name&gt
+	 *  Set the log file location.
+	 *  Log file just keeps track of the best fitness
+     *  found through all the iterations.
+	 *  (default = null)</pre>
 	 * 
 	 <!-- options-end -->
 	 *
@@ -816,6 +928,13 @@ public class PSOSearch extends ASSearch
 		optionString = Utils.getOption('I', options);
 		if (optionString.length() != 0) {
 			setIterations(Integer.parseInt(optionString));
+		}
+		
+		optionString = Utils.getOption('T', options);
+		if (optionString.length() != 0) {
+			setMutationType(new SelectedTag(Integer.parseInt(optionString), TAGS_SELECTION));
+		} else {
+			setMutationType(new SelectedTag(BIT_FLIP, TAGS_SELECTION));
 		}
 		
 	    optionString = Utils.getOption('M', options);
@@ -851,12 +970,20 @@ public class PSOSearch extends ASSearch
 	    optionString = Utils.getOption('S', options);
 	    if (optionString.length() != 0) {
 	      setSeed(Integer.parseInt(optionString));
-	    }	    
+	    }
+	    
+	    optionString = Utils.getOption('L', options);
+	    if (optionString.length() != 0) {
+	    	setLogFile(new File(optionString));
+	    } else {
+	    	setLogFile(new File(System.getProperty("user.dir")));
+	    }
+	    
 
 	} // setOptions
 
 	public String[] getOptions() {
-		String[] options = new String[18];
+		String[] options = new String[22];
 		int current = 0;
 
 		options[current++] = "-N";
@@ -864,6 +991,9 @@ public class PSOSearch extends ASSearch
 		
 		options[current++] = "-I";
 		options[current++] = "" + getIterations();
+		
+		options[current++] = "-T";
+		options[current++] = "" + getMutationType();
 		
 		options[current++] = "-M";
 		options[current++] = "" + getMutationProb();
@@ -887,6 +1017,9 @@ public class PSOSearch extends ASSearch
 		
 		options[current++] = "-S";
 		options[current++] = "" + getSeed();
+		
+		options[current++] = "-L";
+		options[current++] = getLogFile().toString();		
 
 		while (current < options.length) {
 			options[current++] = "";
@@ -908,11 +1041,14 @@ public class PSOSearch extends ASSearch
 		m_bestGW = 0.33;
 		m_bestPW = 0.34;
 		m_pMutation = 0.01;
+		m_mutationType = BIT_FLIP;
 		m_maxGenerations = 20;
 		m_reportFrequency = m_maxGenerations;
 		m_starting = null;
 		m_startRange = new Range();
 		m_seed = 1;
+		m_logFile = new File(System.getProperty("user.dir"));
+		m_bestFitnessList = new LinkedList();
 	}
 	
 	
@@ -925,11 +1061,11 @@ public class PSOSearch extends ASSearch
 		
 		if (m_popSize < 1) {	
 			throw new Exception("Population size set to: " + m_popSize + ", cannot be less than 1!");
-		} else if ((m_currentW + m_bestGW + m_bestPW) != 1.0) {
+		} else if ((m_currentW < 0.0)||(m_bestGW < 0.0)||(m_bestPW < 0.0)||((m_currentW + m_bestGW + m_bestPW) != 1.0)) {
 			throw new Exception("Inertia weight: " + m_currentW
 					            + ", social weight: " + m_bestGW
 					            + ", individual weight: " + m_bestPW
-					            + " -> the sum must be equal to 1!");
+					            + " -> all these weights should be greater than or equal to zero and the sum must be equal to 1!");
 		} else if ((m_pMutation < 0.0)||(m_pMutation > 1.0)) {
 			throw new Exception("Mutation probability set to: " + m_pMutation + ", it must be a real number in the range [0.0, 1.0]!");
 		} else if (m_maxGenerations < 1) {
@@ -1001,12 +1137,12 @@ public class PSOSearch extends ASSearch
 	 * displaying in the explorer/experimenter gui
 	 */
 	public String mutationProbTipText() {
-		return "Set the probability of bit-flip mutation.";
+		return "Set the probability of mutation.";
 	}
 
 	
 	/**
-	 * Set the probability of bit-flip mutation
+	 * Set the probability of mutation
 	 * 
 	 * @param m the probability for mutation occuring
 	 */
@@ -1016,12 +1152,44 @@ public class PSOSearch extends ASSearch
 
 	
 	/**
-	 * Get the probability of bit-flip mutation
+	 * Get the probability of mutation
 	 * 
 	 * @return the probability of mutation occuring
 	 */
 	public double getMutationProb() {
 		return m_pMutation;
+	}
+	
+	
+	/**
+	 * Returns the tip text for this property
+	 * @return tip text for this property suitable for
+	 * displaying in the explorer/experimenter gui
+	 */	
+	public String mutationTypeTipText() {
+		return "Set the mutation type";
+	}
+	
+	
+	/**
+	 * Set the mutation type
+	 * 
+	 * @param t type of mutation: 0 = bit-flip (default), 1 = bit-off
+	 */
+	public void setMutationType(SelectedTag t) {
+		if (t.getTags() == TAGS_SELECTION) {
+			m_mutationType = t.getSelectedTag().getID();
+		}
+	}
+
+	
+	/**
+	 * Get the mutation type
+	 * 
+	 * @return the mutation type
+	 */
+	public SelectedTag getMutationType() {
+		return new SelectedTag(m_mutationType,TAGS_SELECTION);
 	}
 	
 	
@@ -1092,7 +1260,8 @@ public class PSOSearch extends ASSearch
 	 */
 	public String individualWeightTipText() {
 		return "Set the individual weight in 3PBMCX."
-		       + "\n\nIMPORTANT CONSTRAINT: inertia weight + social weight + individual weight = 1!";
+		       + "\n\nIMPORTANT CONSTRAINT: inertia weight + social weight + individual weight = 1 "
+		       + "and all these weights should be greater than or equal to zero!";
 	}
 	
 	
@@ -1249,6 +1418,34 @@ public class PSOSearch extends ASSearch
 		return m_seed;
 	}	
 	
+	
+	/**
+	 * Returns the tip text for this property
+	 * @return tip text for this property suitable for
+	 * displaying in the explorer/experimenter gui
+	 */	
+	public String logFileTipText() {
+		return "Set the log file name. Log file just keeps track of the best fitness "
+               +"found through all the iterations.";
+	}
+	
+	
+	/** 
+	 * set the filename for the log file
+	 * @param filename
+	 */
+	public void setLogFile(File filename) {
+		m_logFile = filename;
+	}
+	
+	
+	/**
+	 * get the log file descriptor 
+	 * @return the log file descriptor
+	 */
+	public File getLogFile() {
+		return m_logFile;
+	}
 
 	/**
 	 * Returns an instance of a TechnicalInformation object, containing 

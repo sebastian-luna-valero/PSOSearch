@@ -74,12 +74,34 @@ public class PSOBitSet extends GABitSet {
 		
 	
 	/**
+	 * apply the mutation selected by the user
+	 * 
+	 * @param r random number generator
+	 * @param mutationP mutation probability
+	 */
+	public void mutation(int mutationType, Random r, double mutationP) {
+		
+		switch (mutationType) {
+			case 0: bitFlipMutation(r, mutationP);	
+			        break;
+			
+			case 1: bitOffMutation(r, mutationP);	
+			        break;
+			
+			default: System.err.println("Unrecognized mutation type: Using default bit-flip!"); 
+			         bitFlipMutation(r, mutationP); 
+			         break;
+		} // switch-case
+	} // mutationType
+	
+	
+	/**
 	 * performs bit-flip mutation of the given particle
 	 * 
 	 * @param r random number generator
 	 * @param mutationP mutation probability
 	 */
-	public void mutation(Random r, double mutationP) {
+	public void bitFlipMutation(Random r, double mutationP) {
 		int i;
 		double p;
 		
@@ -94,6 +116,27 @@ public class PSOBitSet extends GABitSet {
 			} // if-mutationP
 		} // for
 	} // bit-flip mutation
+	
+	
+	/**
+	 * switch off bits with the given probability
+	 * 
+	 * @param r random number generator
+	 * @param mutationP mutation probatility
+	 */
+	public void bitOffMutation(Random r, double mutationP) {
+		int i;
+		double p;
+		
+		for (i = 0; i < this.size-1; i++) {
+			p = r.nextDouble();
+			if (p < mutationP) {
+				if (this.get(i)) {
+					this.clear(i);
+				} 
+			} // if-mutationP
+		} // for		
+	} // bit-off mutation
 	
 	
 	/**

@@ -170,7 +170,7 @@ public class PSOBitSetTest extends TestCase {
 
 	
 	/**
-	 * Test method for {@link weka.attributeSelection.PSOBitSet#mutation(java.util.Random, double)}.
+	 * Test method for {@link weka.attributeSelection.PSOBitSet#mutation(int, java.util.Random, double)}.
 	 */
 	public void testMutation() {
 		int i, seed, size = 100, times = 100;
@@ -194,7 +194,7 @@ public class PSOBitSetTest extends TestCase {
 			// apply bit-flip mutation
 			// warning: remember that java.util.BitSet grows according to the user needs!
 			// warning: to work properly with java.util.BitSet, we need to specify the length of the particle!			
-			tester.mutation(r, p);
+			tester.mutation(0, r, p);
 			
 			// save the number of bits mutated
 			count[seed] = size - tester.countOnes();
